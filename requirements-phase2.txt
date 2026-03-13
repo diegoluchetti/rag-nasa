@@ -1,0 +1,6 @@
+# Fase 2 — Grafo em Neo4j (sem API externa)
+# Instalar após requirements-phase1.txt (ou em mesmo ambiente)
+# pip install -r requirements-phase1.txt -r requirements-phase2.txt
+# Neo4j: instalar/rodar localmente (Docker ou desktop) ou usar Neo4j Aura.
+
+neo4j>=5.0.0

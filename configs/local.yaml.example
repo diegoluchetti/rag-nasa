@@ -1,0 +1,13 @@
+# Copie para configs/local.yaml e preencha (configs/local.yaml está no .gitignore).
+#
+# Neo4j Aura — referência de campos:
+#   URI (Bolt):  neo4j+s://<INSTANCE_ID>.databases.neo4j.io
+#   API URL:     https://<INSTANCE_ID>.databases.neo4j.io/db/<INSTANCE_ID>/query/v2
+#   Instance ID: o mesmo valor no URI (ex.: 2db5009a)
+#   database:    "" para banco padrão do Aura, ou o nome do banco (às vezes igual ao instance ID)
+#
+# neo4j:
+#   uri: neo4j+s://<INSTANCE_ID>.databases.neo4j.io
+#   user: <INSTANCE_ID ou usuário do Aura>
+#   password: sua_senha
+#   database: ""   # vazio = banco padrão do servidor

@@ -1,0 +1,55 @@
+# Configuração central - AI Systems Engineering Assistant (NASA SE Edition)
+# Referência: PLANO_IMPLEMENTACAO_NASA_SE_ASSISTANT.md
+
+# --- Fase 1: Ingestão ---
+ingestion:
+  chunk_size: 1000          # tokens por chunk (sugerido: 1000)
+  chunk_overlap: 0.15       # 15% de sobreposição entre chunks
+  table_format: markdown   # markdown | html (testar qual o LLM entende melhor)
+  tokenizer_encoding: cl100k_base  # tiktoken (compatível com muitos modelos)
+  # Processar PDF em lotes de páginas para evitar std::bad_alloc (falta de RAM)
+  pdf_page_batch_size: 3   # 3 páginas por lote (máxima segurança contra bad_alloc)
+
+# --- Fase 2: Grafo em Neo4j (sem API externa; substitui Microsoft GraphRAG) ---
+neo4j:
+  uri: bolt://localhost:7687
+  user: neo4j
+  password: ""                    # definir em variável de ambiente NEO4J_PASSWORD ou aqui
+  database: neo4j
+  # Recuperação
+  default_query_method: fulltext   # fulltext | by_section
+  top_k: 5                        # número de chunks a retornar por query
+  system_prompt_path: configs/prompts_nasa_system.txt
+  temperature: 0.0
+
+# --- Fase 2 (legado): RAG reranked — mantido para referência/comparação ---
+rag:
+  top_k_retrieval: 20
+  top_n_rerank: 3
+  rerank_threshold: 0.7
+  temperature: 0.0
+
+# --- Fase 3: Dataset (referência) ---
+dataset_gen:
+  num_pairs: 1000
+  seed: 42
+
+# --- Fase 4: Fine-Tuning (referência) ---
+finetuning:
+  learning_rate: 2.0e-4
+  epochs: 3
+  lora_rank: 16
+  lora_alpha: 32
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+
+# --- Paths (relativos à raiz do projeto) ---
+paths:
+  data_raw: data/raw
+  data_markdown: data/markdown
+  data_chunks: data/chunks
+  vector_store: vector_store
+  models: models

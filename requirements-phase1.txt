@@ -1,0 +1,18 @@
+# Fase 1 - Ingestão (Checkpoint 1)
+# AI Systems Engineering Assistant - NASA SE Edition
+
+# Parsing PDF → Markdown (tabelas e hierarquia)
+docling>=2.0.0
+
+# Contagem de tokens para chunk_size
+tiktoken>=0.5.0
+
+# Contagem de páginas do PDF (para processamento em lotes)
+pypdf>=4.0.0
+
+# Testes
+pytest>=7.0.0
+
+# Utilitários
+PyYAML>=6.0
+pathlib2>=2.3.7; python_version < "3.4"

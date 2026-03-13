@@ -1,0 +1,32 @@
+# Ambiente e artefatos
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Dados e artefatos gerados (regeráveis pela ingestão / Neo4j)
+data/
+graphrag_workspace/
+log/
+vector_store/
+
+# GraphRAG workspace (chaves de API não versionadas)
+.env
+graphrag_workspace/.env
+
+# Config local (credenciais Neo4j etc.; não versionar)
+configs/local.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
