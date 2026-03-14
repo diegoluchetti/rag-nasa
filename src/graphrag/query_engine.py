@@ -1,9 +1,10 @@
 """
 Motor de query sobre o grafo Neo4j (Fase 2).
-Busca full-text nos chunks, retorna contexto; opcionalmente aplica prompt NASA se houver LLM configurado.
-Neo4j não requer API externa (apenas conexão ao banco).
+Busca full-text nos chunks; opcionalmente LLM pré-processa o contexto (Design Decision 19).
+Fontes (seção, página, parágrafo) são sempre injetadas pela aplicação a partir do retrieval.
 """
 import hashlib
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -28,6 +29,86 @@ def get_nasa_system_prompt(config: dict[str, Any] | None = None) -> str:
         LOG.warning("Arquivo de system prompt não encontrado: %s", path)
         return ""
     return path.read_text(encoding="utf-8").strip()
+
+
+def _format_hit(row: dict[str, Any], index: int) -> str:
+    """Formata um hit retornado do Neo4j, incluindo página/parágrafo quando disponíveis."""
+    sec = row.get("section_title") or "(sem seção)"
+    text = row.get("text") or ""
+    page = row.get("page")
+    paragraph = row.get("paragraph")
+
+    origin_bits: list[str] = []
+    if isinstance(page, int) and page > 0:
+        origin_bits.append(f"p.{page}")
+    if isinstance(paragraph, int) and paragraph > 0:
+        origin_bits.append(f"parágrafo {paragraph}")
+
+    origin_str = ""
+    if origin_bits:
+        origin_str = " (" + ", ".join(origin_bits) + ")"
+
+    header = f"[{index}] {sec}{origin_str}"
+    return f"{header}\n{text}"
+
+
+def _format_source_line(row: dict[str, Any], index: int) -> str:
+    """Formata uma linha da seção Fontes (apenas metadados do retrieval; Design Decision 19)."""
+    sec = row.get("section_title") or "(sem seção)"
+    page = row.get("page")
+    paragraph = row.get("paragraph")
+    origin_bits: list[str] = []
+    if isinstance(page, int) and page > 0:
+        origin_bits.append(f"p.{page}")
+    if isinstance(paragraph, int) and paragraph > 0:
+        origin_bits.append(f"parágrafo {paragraph}")
+    origin_str = " (" + ", ".join(origin_bits) + ")" if origin_bits else ""
+    return f"[{index}] {sec}{origin_str}"
+
+
+def _call_llm_for_response(
+    question: str,
+    context_plain: str,
+    system_prompt: str,
+    config: dict[str, Any],
+) -> str | None:
+    """
+    Envia pergunta + contexto (apenas texto) ao LLM pequeno (Ollama).
+    Retorna a resposta processada ou None em caso de erro.
+    Não envia nem pede fontes ao modelo; a aplicação injeta depois.
+    """
+    neo = config.get("neo4j", {})
+    model = neo.get("llm_model", "qwen2.5:3b")
+    temperature = float(neo.get("temperature", 0.0))
+    timeout = int(neo.get("llm_timeout", 90))
+    url = neo.get("ollama_url", "http://localhost:11434").rstrip("/") + "/api/generate"
+
+    user_prompt = (
+        "Contexto do NASA Systems Engineering Handbook (trechos recuperados):\n\n"
+        f"{context_plain}\n\n"
+        "Pergunta do usuário:\n"
+        f"{question}\n\n"
+        "Responda de forma clara e objetiva com base apenas no contexto acima. "
+        "Não invente fontes, páginas ou seções; as referências serão adicionadas automaticamente."
+    )
+    payload = {
+        "model": model,
+        "system": system_prompt or "",
+        "prompt": user_prompt,
+        "stream": False,
+        "options": {"temperature": temperature, "num_predict": 1024},
+    }
+    try:
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError, HTTPError
+        data = json.dumps(payload).encode("utf-8")
+        req = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urlopen(req, timeout=timeout) as resp:
+            out = json.loads(resp.read().decode("utf-8"))
+        return (out.get("response") or "").strip()
+    except (URLError, HTTPError, OSError, ValueError) as e:
+        LOG.warning("LLM para resposta indisponível (%s); retornando apenas contexto.", e)
+        return None
 
 
 def ensure_index_exists(config: dict[str, Any]) -> int:
@@ -60,10 +141,10 @@ def run_query(
     verbose: bool = False,
 ) -> str:
     """
-    Busca no Neo4j (full-text nos chunks) e retorna o contexto concatenado como resposta.
-    Não chama LLM (Neo4j não precisa de API); o texto retornado é o contexto recuperado.
-    Para gerar resposta com LLM + prompt NASA, use um pipeline externo que chame run_query
-    para obter contexto e depois o LLM.
+    Busca no Neo4j (full-text nos chunks). Se neo4j.use_llm_for_response for True,
+    o contexto (apenas texto) é enviado a um LLM pequeno para pré-processamento;
+    as fontes (seção, página, parágrafo) são injetadas pela aplicação (Design Decision 19).
+    Caso contrário, retorna os trechos formatados como hoje.
     """
     config = load_config(config_name)
     ensure_index_exists(config)
@@ -79,18 +160,29 @@ def run_query(
         if method in ("fulltext", "full_text"):
             rows = query_fulltext(driver, question, top_k=top_k, database=database)
         else:
-            # by_section: poderia filtrar por section_title; por simplicidade usa fulltext
             rows = query_fulltext(driver, question, top_k=top_k, database=database)
 
         if not rows:
             response = "(Nenhum trecho encontrado para a busca no Handbook.)"
         else:
-            parts = []
-            for i, r in enumerate(rows, 1):
-                sec = r.get("section_title") or "(sem seção)"
-                text = r.get("text") or ""
-                parts.append(f"[{i}] {sec}\n{text}")
-            response = "\n\n---\n\n".join(parts)
+            use_llm = bool(neo.get("use_llm_for_response", False))
+            system_prompt = get_nasa_system_prompt(config) if use_llm else ""
+            # Contexto só com texto (sem metadados) para o LLM; fontes injetadas depois
+            context_plain = "\n\n".join(
+                f"Bloco {i}:\n{(r.get('text') or '').strip()}" for i, r in enumerate(rows, 1)
+            )
+            sources_section = "\n".join(_format_source_line(r, i) for i, r in enumerate(rows, 1))
+
+            if use_llm and system_prompt and context_plain:
+                llm_response = _call_llm_for_response(question, context_plain, system_prompt, config)
+                if llm_response:
+                    response = f"{llm_response}\n\n---\n\nFontes:\n{sources_section}"
+                else:
+                    parts = [_format_hit(r, i) for i, r in enumerate(rows, 1)]
+                    response = "\n\n---\n\n".join(parts)
+            else:
+                parts = [_format_hit(r, i) for i, r in enumerate(rows, 1)]
+                response = "\n\n---\n\n".join(parts)
     finally:
         driver.close()
 

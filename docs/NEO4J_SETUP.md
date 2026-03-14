@@ -133,7 +133,7 @@ Saída esperada (exemplo):
 Ok: 699 chunks ingeridos no Neo4j. Use scripts/run_neo4j_query.py para consultar.
 ```
 
-O número de chunks depende dos arquivos em `data/chunks/*.jsonl` (Fase 1).
+O número de chunks depende dos arquivos em `data/chunks/*.jsonl` (Fase 1). Cada nó Chunk inclui, quando disponíveis, as propriedades **`page`** e **`paragraph`** (propagadas desde a conversão PDF→MD para que a resposta possa citar origem no PDF — FR-2.3.6). Para que essas propriedades existam, é necessário ter gerado os chunks com o pipeline de ingestão atual (conversão em lotes com marcadores de página e chunker que preenche metadados).
 
 ---
 
@@ -149,7 +149,7 @@ Ou com log em `log/`:
 python scripts/run_neo4j_query.py "Verification and Validation" --log-dir log
 ```
 
-A saída é o **contexto** (trechos do Handbook recuperados pela busca full-text).
+A saída é o **contexto** (trechos do Handbook recuperados pela busca full-text). Quando os nós Chunk tiverem `page` e `paragraph` preenchidos, cada trecho é exibido com referência à origem, por exemplo: `(p.42, parágrafo 2)` (ver FR-2.3.6 e DESIGN_DECISIONS.md, decisão 18).
 
 ---
 
@@ -172,7 +172,7 @@ Relatórios gerados em:
 - `log/phase2_requirements_verification_<timestamp>.json`
 - `log/phase2_requirements_verification_<timestamp>.txt`
 
-Com Neo4j rodando, senha configurada e ingestão feita, o esperado é **0 FAIL** (e menos SKIP); FR-2.2.1, FR-2.1.2 e FR-2.2.3 passam quando o banco está acessível e com chunks.
+Com Neo4j rodando, senha configurada e ingestão feita, o esperado é **0 FAIL**; FR-2.2.1, FR-2.1.2 e FR-2.2.3 passam quando o banco está acessível e com chunks. Rode com `--run-reference-query` para validar a query de referência.
 
 ---
 

@@ -39,6 +39,7 @@ A Fase 2 constrói um **grafo de conhecimento** a partir dos chunks da Fase 1 no
 | FR-2.3.3 | O método de query deve ser configurável por config. | Parâmetro `neo4j.default_query_method` e `neo4j.top_k`. |
 | FR-2.3.4 | O prompt de sistema NASA deve estar disponível para uso com LLM (quando aplicável). | Arquivo configurável em `neo4j.system_prompt_path` (ex.: `configs/prompts_nasa_system.txt`). |
 | FR-2.3.5 | Temperatura configurável para geração com LLM (quando aplicável). | `neo4j.temperature` (ex.: 0.0). |
+| FR-2.3.6 | A resposta deve mencionar a origem no PDF (página e parágrafo) sempre que possível. | Para cada trecho usado na resposta, quando a informação estiver disponível nos metadados, a resposta inclui indicação da página (ex.: “p. 123”) e referência de parágrafo (ex.: “parágrafo 3”). A informação é propagada desde a Fase 1: marcadores `<!-- page N -->` no Markdown, metadados `page` e `paragraph` nos chunks JSONL e nos nós Chunk no Neo4j; o motor de query formata o cabeçalho de cada hit como `(p.X, parágrafo Y)` quando ambos > 0. |
 
 ### FR-2.4 Checkpoint 2 e qualidade
 
@@ -87,7 +88,7 @@ A Fase 2 constrói um **grafo de conhecimento** a partir dos chunks da Fase 1 no
 ## 4. Diagrama de arquitetura (Fase 2 — Neo4j)
 
 ```
-data/chunks/*.jsonl  -->  [Ingestão Neo4j]  -->  Neo4j: nós Chunk, NEXT, índice full-text
+data/chunks/*.jsonl  -->  [Ingestão Neo4j]  -->  Neo4j: nós Chunk (text, section_title, page, paragraph, …), NEXT, índice full-text
                                                       |
 User question ----------> [Query Engine]  -->  full-text search no Neo4j
                                                       |
@@ -107,7 +108,7 @@ O script de verificação de requisitos deve avaliar pelo menos os seguintes IDs
 
 **Não funcionais:** NFR-2.1.1, NFR-2.1.2, NFR-2.1.3, NFR-2.2.1, NFR-2.2.2, NFR-2.3.1, NFR-2.3.2, NFR-2.3.3, NFR-2.4.1, NFR-2.4.2.
 
-Cada item deve resultar em: **PASS** (critério de aceite atendido), **FAIL** (não atendido) ou **SKIP** (pré-condição não satisfeita, ex.: índice não construído). Métricas numéricas ou booleanas devem ser registradas onde aplicável (ex.: número de arquivos em input, presença de parquets, tamanho do contexto).
+Cada item deve resultar em **PASS** ou **FAIL**. Pré-condições não satisfeitas (ex.: índice não construído, query de referência não executada) são tratadas como **FAIL**; corrigir a pré-condição e rodar o verificador novamente. Métricas numéricas ou booleanas devem ser registradas onde aplicável (ex.: número de arquivos em input, tamanho do contexto).
 
 ---
 

@@ -2,38 +2,40 @@
 
 > **Tipo**: Blueprint de Desenvolvimento / Especificação de Sistema  
 > **Base de Conhecimento**: NASA Systems Engineering Handbook (SP-2016-6105-REV2)  
-> **Objetivo**: Sistema de IA de elite para Engenharia de Sistemas — parsing de alta fidelidade, RAG com reranking e fine-tuning de SLM para escrita de requisitos e análise de processos.
+> **Objetivo**: Sistema de IA para Engenharia de Sistemas — parsing de alta fidelidade, recuperação (Neo4j) + LLM que pré-processa o contexto com **fontes preservadas** (Design Decision 19), e fine-tuning de SLM para entrega em **.gguf** e **.ipynb**, com foco em **escalabilidade e restrições financeiras** (evitar APIs pagas no fluxo final).
 
 ---
 
 ## 1. Visão Geral do Sistema
 
-Você está desenvolvendo um **AI Systems Engineering Assistant** que:
+O **AI Systems Engineering Assistant**:
 
 - Utiliza o **NASA Systems Engineering Handbook** como única fonte de verdade.
-- Garante **parsing de alta fidelidade** (tabelas e hierarquia preservadas).
-- Oferece **recuperação precisa** via RAG com reranking.
-- Possui um **modelo especializado** (SLM fine-tunado) no “dialeto” NASA para requisitos e processos.
+- **Fase 1:** Parsing de alta fidelidade (Docling → Markdown), chunker hierarchy-aware, **propagação de página/parágrafo** até a resposta.
+- **Fase 2 (implementado):** Recuperação full-text no **Neo4j**; **LLM pequeno** pré-processa o contexto para resposta mais clara; **fontes (seção, página, parágrafo) são injetadas pela aplicação** (não geradas pelo LLM) para evitar alucinações. Modelo de processamento: pequeno (ex.: 4B–7B), local (Ollama).
+- **Fase 3 (implementado):** Dataset sintético (pares instrução/resposta) para fine-tuning; geração via Ollama ou fallback sem LLM.
+- **Fases 4–5 (objetivo final):** Fine-tuning do SLM (Unsloth/LoRA), **export para .gguf**, integração RAG-tuned, avaliação (métricas), e **entregáveis ao cliente: um notebook executável (.ipynb) e o modelo .gguf** para uso local, testável e mensurável, sem dependência de APIs pagas.
 
-**Regras de ouro para o desenvolvedor:**
+**Regras de ouro:**
 
-1. **Não avance de fase sem validar o checkpoint anterior.** Comece pela Fase 1 e valide o output do Docling antes de prosseguir.
-2. **Priorize o modelo de 3B parâmetros** no fine-tuning se houver VRAM disponível (mínimo 8GB–12GB); caso contrário use 1B.
-3. Use **LangSmith ou ferramentas de log** para rastrear cada chamada do RAG e identificar onde o Reranker filtra informações críticas.
+1. Não avance de fase sem validar o checkpoint anterior.
+2. Priorize **ferramentas locais e gratuitas** (Ollama, Neo4j community/Aura free, Unsloth) para manter custos controlados e solução escalável.
+3. **Fontes de citação** (página, parágrafo, seção) vêm sempre dos metadados do retrieval; o LLM não gera nem altera referências (Design Decision 19).
 
 ---
 
-## 2. Stack Tecnológica Obrigatória
+## 2. Stack Tecnológica (atual e alvo)
 
-| Componente        | Tecnologia                          | Observação                                      |
+| Componente        | Implementado / alvo                 | Observação                                      |
 |-------------------|-------------------------------------|-------------------------------------------------|
-| **Parsing**       | IBM Docling                         | Extração de tabelas e hierarquia em Markdown   |
-| **Vetorização**   | nomic-embed-text ou bge-small-en-v1.5 | Embeddings para busca semântica               |
-| **Banco Vetorial**| ChromaDB ou LanceDB                 | Persistência de vetores                        |
-| **Reranker**      | BAAI/bge-reranker-v2-m3            | Cross-encoder para Top-K → Top-N               |
-| **Orquestração**  | LangChain ou LlamaIndex             | Pipeline RAG e encadeamento                     |
-| **Fine-Tuning**   | Unsloth                             | Llama 3.2 3B ou Qwen 2.5 3B                    |
-| **Dados**         | NASA SE Handbook (SP-2016-6105-REV2)| PDF oficial                                    |
+| **Parsing**       | IBM Docling                         | PDF → Markdown; marcadores `<!-- page N -->`   |
+| **Chunks**        | Hierarchy Aware Chunker             | JSONL com page, paragraph, section_title        |
+| **Recuperação**   | **Neo4j** (full-text)               | Sem API paga; local ou Aura free                |
+| **Resposta**      | **Ollama** (LLM pequeno, ex. 3B)    | Pré-processa contexto; fontes injetadas pela app |
+| **Dataset (Fase 3)** | Ollama ou fallback               | Geração de pares para fine-tuning               |
+| **Fine-Tuning**   | Unsloth (Llama/Qwen 3B)             | LoRA/QLoRA; export para **.gguf**               |
+| **Entregáveis**   | **.ipynb + .gguf**                  | Cliente: notebook + modelo para uso local      |
+| *(Alternativas)* | ChromaDB/LanceDB + reranker         | Opcional para variante com busca semântica      |
 
 ---
 
@@ -74,72 +76,51 @@ table_format: markdown  # ou html
 
 ---
 
-## 4. Fase 2 — RAG Avançado com Reranking (Checkpoint 2)
+## 4. Fase 2 — Query: Neo4j + LLM com fontes intactas (Checkpoint 2) ✅ Implementado
 
-**Objetivo:** Garantir que o sistema encontre a **informação exata** entre 300+ páginas (recuperação + reranking).
+**Objetivo:** Recuperar trechos relevantes (full-text Neo4j) e produzir uma resposta clara usando um **LLM pequeno** que **pré-processa** o contexto, com a **informação de fonte (seção, página, parágrafo) preservada e injetada pela aplicação** (Design Decision 19 — evita alucinações em citações).
 
-### Tarefa 2.1 — Vector Store e Busca Semântica
+### Implementado
 
-- Configurar **Vector Store** (ChromaDB ou LanceDB) com os chunks da Fase 1.
-- Usar embeddings: **nomic-embed-text** ou **bge-small-en-v1.5**.
-- Busca semântica com **Top-K: 20** candidatos.
-
-### Tarefa 2.2 — Cross-Encoder Reranker
-
-- Integrar **BAAI/bge-reranker-v2-m3** como cross-encoder.
-- Fluxo: **Top-20** (busca vetorial) → Reranker → **Top-3** (ou Top-N configurável) mais relevantes.
-- Opcional: aplicar **rerank_threshold** (sugerido **0.7**) para filtrar por score.
-
-### Tarefa 2.3 — Prompt de Sistema (Persona NASA)
-
-- Implementar **prompt de sistema** especializado em **Engenharia de Sistemas**, tom de voz **NASA**:
-  - Responder com base **apenas** no Handbook (sem alucinar).
-  - Usar terminologia e estrutura de requisitos (“Shall statements”, Verification/Validation, etc.).
-  - Citar seções ou apêndices quando relevante.
+- **Recuperação:** Neo4j com índice full-text nos chunks (sem API paga; local ou Aura free). Top-K configurável.
+- **LLM (pré-processamento):** Envio ao modelo apenas do **texto** dos trechos (sem metadados de fonte). O LLM devolve prosa/resumo; a aplicação monta a seção **Fontes** com os metadados exatos do retrieval (section_title, page, paragraph). Modelo pequeno (ex.: 3B–7B) via Ollama.
+- **Prompt de sistema NASA:** Em `configs/prompts_nasa_system.txt`; instrui a responder apenas com base no contexto e a não inventar fontes (as referências são adicionadas automaticamente).
+- **Métricas:** Conjunto gold (`data/phase2_gold_questions.json`); Hit Rate e MRR computados e registrados em `log/`. Verificador de requisitos (PASS/FAIL) para validar o Checkpoint 2.
 
 ### Métricas Ajustáveis (Fase 2)
 
 ```yaml
-top_k_retrieval: 20
-top_n_rerank: 3        # ou 5
-rerank_threshold: 0.7
-temperature: 0.0       # precisão técnica
+neo4j.top_k: 5
+neo4j.use_llm_for_response: true
+neo4j.llm_model: "qwen2.5:3b"
+neo4j.ollama_url: "http://localhost:11434"
+temperature: 0.0
 ```
 
 ### Checkpoint 2 — Critério de Validação
 
-- [ ] Medir **Hit Rate** e **MRR** (Mean Reciprocal Rank) em um conjunto de perguntas de teste.
-- [ ] A resposta para **“Qual a diferença entre Verificação e Validação?”** deve ser **perfeita** (alinhada ao Handbook, sem invenção).
-
-**Não avance para a Fase 3 sem cumprir o Checkpoint 2.**
+- [ ] Hit Rate e MRR computados a partir do conjunto gold.
+- [ ] Resposta para **“Qual a diferença entre Verificação e Validação?”** alinhada ao Handbook; fontes exibidas são as do retrieval (não geradas pelo LLM).
+- [ ] Verificador Fase 2: todos os itens PASS (sem SKIP; pré-condições não atendidas = FAIL).
 
 ---
 
-## 5. Fase 3 — Geração de Dataset Sintético (Checkpoint 3)
+## 5. Fase 3 — Geração de Dataset Sintético (Checkpoint 3) ✅ Implementado
 
-**Objetivo:** Preparar dados para **Fine-Tuning** do SLM — pares Instrução/Resposta de alta qualidade.
+**Objetivo:** Produzir pares Instrução/Resposta para **Fine-Tuning** do SLM; formato JSONL (train/val); geração via LLM (Ollama) ou **fallback sem LLM** (para rodar sem custo de API).
 
-### Tarefa 3.1 — Geração de Pares Instrução/Resposta
+### Implementado
 
-- Usar o **Markdown do Docling** (com foco em **Apêndice C** e seções de **Processos**) para gerar **1.000 pares** de Instrução/Resposta.
-
-### Tarefa 3.2 — Foco do Dataset
-
-- **Transformação de requisitos:** requisitos ambíguos → requisitos no padrão NASA (**Shall statements**).
-- **Explicação de processos:** diagramas de entrada/saída de processos de SE (inputs, outputs, atividades).
-- Garantir **diversidade**: checklists, definições, correções de redação, exemplos de Verification vs Validation.
-
-### Métricas de Qualidade
-
-- Diversidade de exemplos (checklists, definições, correções).
-- Formato **JSONL** compatível com **Unsloth/HuggingFace** (campos: `instruction`, `output` ou equivalente).
+- **Pacote** `src/dataset_gen/`: schema (DatasetExample), sampler (chunks por seção), generator (Ollama ou fallback sintético), postprocess, export. Config: `dataset_gen.num_pairs`, `seed`, **`use_llm`** (true = Ollama; false = fallback).
+- **Saída:** `data/datasets/nasa_se_synthetic_train.jsonl` e `_val.jsonl` (split 90/10). Métricas em `log/dataset_phase3_*.json`.
+- **Tipos de exemplo:** qa, rewrite, critique (compatível com diversidade: requisitos, processos, Verification vs Validation).
+- **Verificador Fase 3:** PASS/FAIL (schema, arquivos, ≥100 exemplos, cobertura por tags).
 
 ### Checkpoint 3 — Critério de Validação
 
-- [ ] **Revisão manual de 20 amostras** do dataset.
-- [ ] A **lógica de engenharia** está correta? O formato NASA está sendo respeitado?
-
-**Não avance para a Fase 4 sem cumprir o Checkpoint 3.**
+- [ ] Dataset gerado com ≥100 exemplos válidos; train e val presentes.
+- [ ] Verificador Fase 3: todos os itens PASS.
+- [ ] Revisão manual de amostras recomendada (lógica de engenharia, formato NASA).
 
 ---
 
@@ -179,59 +160,66 @@ target_modules:
 
 ---
 
-## 7. Fase 5 — Integração Final e Avaliação
+## 7. Fase 5 — Integração Final, Avaliação e Entregáveis
 
-**Objetivo:** Otimizar o pipeline **“RAG-tuned”** (RAG + modelo fine-tunado) e medir performance com métricas padrão.
+**Objetivo:** Pipeline **RAG-tuned** (recuperação + modelo fine-tunado em .gguf), avaliado e **entregue ao cliente** em formato **escalável e com restrições de custo** (uso local, sem APIs pagas no fluxo final).
 
-### Tarefa 5.1 — Avaliação com RAGAS
+### Tarefa 5.1 — Avaliação
 
-Comparar a performance final usando as métricas **RAGAS**:
+- Métricas: **Hit Rate**, **MRR** (Fase 2); **Faithfulness**, **Answer Relevance**, **Context Precision** (RAGAS ou equivalentes) para o pipeline final.
+- Objetivo: modelo treinado **testável e mensurável**; resultados documentados (relatório ou células no .ipynb).
 
-| Métrica             | O que mede                                                                 |
-|---------------------|----------------------------------------------------------------------------|
-| **Faithfulness**    | O modelo inventou algo fora do manual? (grounding no contexto)             |
-| **Answer Relevance**| A resposta é útil para um engenheiro? (relevância da resposta)           |
-| **Context Precision** | O Reranker escolheu o trecho certo? (qualidade do contexto recuperado) |
+### Entregáveis Finais (cliente)
 
-### Entregáveis Finais
-
-- Pipeline RAG + Reranker estável e versionado.
-- Modelo fine-tunado (LoRA/QLoRA) exportado e integrado à orquestração.
-- Relatório de métricas (Hit Rate, MRR, Faithfulness, Answer Relevance, Context Precision).
-- Documentação de como executar ingestão, treino e inferência.
+- **Notebook (.ipynb):** Um Jupyter notebook executável que documenta e executa o fluxo: carregar modelo .gguf (Ollama/llama.cpp), rodar perguntas de exemplo, exibir resposta e fontes, e opcionalmente células de avaliação. Reproduzível **sem custo de API**.
+- **Modelo (.gguf):** Arquivo do LLM fine-tunado para inferência local (Ollama, llama.cpp), entregue junto ao projeto.
+- **Relatório de métricas** (Hit Rate, MRR, Faithfulness, Answer Relevance, Context Precision) em `docs/` ou integrado ao .ipynb.
+- **Documentação** de como executar o .ipynb e usar o .gguf; arquitetura pensada para **escalabilidade** e **restrições financeiras** (ferramentas locais/gratuitas quando possível).
 
 ---
 
 ## 8. Resumo dos Checkpoints e Ordem de Execução
 
-| Ordem | Fase   | Checkpoint                                                                 |
-|-------|--------|----------------------------------------------------------------------------|
-| 1     | Fase 1 | Tabelas “Requirement Verification Matrix” legíveis e completas no MD      |
-| 2     | Fase 2 | Hit Rate e MRR ok; resposta “Verificação vs Validação” perfeita            |
-| 3     | Fase 3 | 20 amostras revisadas; lógica de engenharia correta no dataset             |
-| 4     | Fase 4 | Curva de Loss plotada; modelo tunado melhor que base em formato NASA       |
-| 5     | Fase 5 | Métricas RAGAS reportadas; RAG-tuned integrado e documentado               |
+| Ordem | Fase   | Checkpoint / Entregável                                                |
+|-------|--------|-------------------------------------------------------------------------|
+| 1     | Fase 1 | Tabelas legíveis no MD; chunks com page/paragraph; Checkpoint 1 ✅       |
+| 2     | Fase 2 | Neo4j + LLM (fontes injetadas); Hit Rate/MRR; verificador PASS ✅       |
+| 3     | Fase 3 | Dataset train/val JSONL; ≥100 exemplos; verificador PASS ✅              |
+| 4     | Fase 4 | Fine-tuning (Unsloth/LoRA); curva de loss; **export para .gguf**         |
+| 5     | Fase 5 | RAG-tuned; métricas; **entregáveis: .ipynb + modelo .gguf** para cliente |
 
 ---
 
-## 9. Prompt de Sistema Sugerido (Persona NASA)
+## 9. Prompt de Sistema (Persona NASA)
 
-Use o texto abaixo como base para o **system prompt** do assistente RAG (ajuste conforme necessário):
+O texto em **`configs/prompts_nasa_system.txt`** é usado como system prompt quando o LLM pré-processa o contexto (Fase 2). A aplicação **não** pede ao modelo para gerar citações de fonte; as referências (seção, página, parágrafo) são **injetadas** a partir dos metadados do retrieval (Design Decision 19).
+
+**Guardrails:** Todas as regras de comportamento do system prompt estão mapeadas e detalhadas em **`docs/GUARDRAILS_SYSTEM_PROMPT.md`** (IDs G1–G7, rationale, enforcement no prompt vs. na aplicação). Use esse documento como referência única ao alterar ou estender o prompt.
 
 ```text
-You are an expert Systems Engineering Assistant trained on the NASA Systems Engineering Handbook (SP-2016-6105-REV2). Your role is to answer questions strictly based on the provided context from the Handbook. Use NASA terminology: "shall" statements for requirements, distinguish clearly between Verification and Validation, and refer to processes by their official names and inputs/outputs. If the context does not contain enough information, say so. Do not invent definitions or procedures. When relevant, cite the section or appendix (e.g., Appendix C) from the context.
+You are an expert Systems Engineering Assistant trained on the NASA Systems Engineering Handbook (SP-2016-6105-REV2). Your role is to answer questions strictly based on the provided context from the Handbook. Use NASA terminology: "shall" statements for requirements, distinguish clearly between Verification and Validation, and refer to processes by their official names and inputs/outputs. If the context does not contain enough information, say so. Do not invent definitions or procedures. Do not invent or generate source references (page, section); they will be added automatically.
 ```
 
 ---
 
-## 10. Referências Rápidas
+## 10. Restrições Financeiras e Escalabilidade
 
-- **NASA SE Handbook:** SP-2016-6105-REV2 (PDF).
-- **Docling:** IBM Docling para PDF → Markdown.
-- **Reranker:** BAAI/bge-reranker-v2-m3 (Hugging Face).
-- **Unsloth:** Fine-tuning eficiente para Llama/Qwen.
-- **RAGAS:** Framework de avaliação para pipelines RAG (Faithfulness, Answer Relevance, Context Precision).
+- **Preferir:** Neo4j (local ou Aura free), Ollama (modelos locais), Unsloth (fine-tuning local), dataset gerado com fallback sem LLM. Evitar APIs pagas (OpenAI, etc.) no fluxo de produção e no entregável ao cliente.
+- **Entregável final:** Cliente recebe **.ipynb** (notebook executável) e **.gguf** (modelo para inferência local). Uso sem custo por chamada; escalável em ambiente controlado.
 
 ---
 
-*Documento gerado como prompt específico para o projeto AI Systems Engineering Assistant — NASA SE Edition. Desenvolva fase a fase e valide cada checkpoint antes de prosseguir.*
+## 11. Referências Rápidas
+
+- **NASA SE Handbook:** SP-2016-6105-REV2 (PDF).
+- **Docling:** IBM Docling para PDF → Markdown.
+- **Neo4j:** Full-text search; sem API externa paga.
+- **Ollama:** Inferência local (modelos pequenos para processamento e dataset).
+- **Unsloth:** Fine-tuning; export para .gguf.
+- **RAGAS:** Avaliação RAG (Faithfulness, Answer Relevance, Context Precision).
+- **Design Decision 19:** LLM pré-processa contexto; fontes injetadas pela aplicação (`docs/DESIGN_DECISIONS.md`).
+- **Guardrails do system prompt:** Mapeamento completo em `docs/GUARDRAILS_SYSTEM_PROMPT.md`.
+
+---
+
+*Documento alinhado ao estado atual da implementação (Fases 1–3 e motor de query). Fases 4–5 mantêm o objetivo: modelo fine-tunado testável e mensurável, entregue como .ipynb + .gguf.*

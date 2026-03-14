@@ -89,7 +89,8 @@ def convert_pdf_to_markdown(
             try:
                 result = converter.convert(str(pdf_path), page_range=(start, end))
                 part = result.document.export_to_markdown()
-                md_parts.append(part)
+                # Marcador para propagação de número de página até chunks/Neo4j (FR-2.3.6)
+                md_parts.append(f"\n\n<!-- page {start} -->\n\n{part}")
                 if hasattr(result.document, "tables"):
                     total_tables += len(result.document.tables)
             except Exception as e:
@@ -105,7 +106,8 @@ def convert_pdf_to_markdown(
         LOG.info("Iniciando conversão com Docling (documento inteiro): %s", pdf_path)
         converter = DocumentConverter()
         result = converter.convert(str(pdf_path))
-        md_content = result.document.export_to_markdown()
+        part = result.document.export_to_markdown()
+        md_content = "\n\n<!-- page 1 -->\n\n" + part  # único bloco = página 1 para propagação
         num_tables = len(result.document.tables) if hasattr(result.document, "tables") else 0
 
     if table_format == "html":

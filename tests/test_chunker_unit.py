@@ -25,18 +25,19 @@ def test_split_into_blocks_single_header():
     md = "# Title\n\nSome content."
     blocks = _split_into_blocks(md)
     assert len(blocks) >= 1
-    level, title, content = blocks[0]
+    level, title, content, page = blocks[0]
     assert level == 1
     assert "Title" in title
     assert "Some content" in content
+    assert page == 0  # sem marcador <!-- page N -->
 
 
 def test_split_into_blocks_two_sections():
     md = "# A\n\nText A.\n\n## B\n\nText B."
     blocks = _split_into_blocks(md)
     assert len(blocks) >= 2
-    _, t1, c1 = blocks[0]
-    _, t2, c2 = blocks[1]
+    _, t1, c1, _ = blocks[0]
+    _, t2, c2, _ = blocks[1]
     assert "A" in t1 and "Text A" in c1
     assert "B" in t2 and "Text B" in c2
 
@@ -46,9 +47,34 @@ def test_split_into_blocks_appendix_style():
     blocks = _split_into_blocks(md)
     assert len(blocks) >= 1
     # Primeiro bloco pode ser (1, "Appendix C", ...) ou (2, "C.1", "Content.") conforme flush
-    level, title, content = blocks[0]
+    level, title, content, page = blocks[0]
     assert level >= 1
     assert "Appendix" in title or "C" in title or "C.1" in title
+    assert isinstance(page, int)
+
+
+def test_split_into_blocks_page_marker():
+    """Marcador <!-- page N --> deve preencher page nos blocos (propagação FR-2.3.6)."""
+    md = "\n\n<!-- page 5 -->\n\n# Section\n\nContent after page 5."
+    blocks = _split_into_blocks(md)
+    assert len(blocks) >= 1
+    _, title, content, page = blocks[0]
+    assert page == 5
+    assert "Section" in title and "Content" in content
+
+
+def test_chunk_markdown_file_has_page_paragraph_metadata(tmp_path):
+    """Chunks devem ter page e paragraph em metadata quando há marcador de página."""
+    md_file = tmp_path / "with_page.md"
+    md_file.write_text(
+        "\n\n<!-- page 3 -->\n\n# Sec\n\nShort text.",
+        encoding="utf-8",
+    )
+    chunks = chunk_markdown_file(md_file, chunk_size=1000, chunk_overlap=0)
+    assert len(chunks) >= 1
+    meta = chunks[0]["metadata"]
+    assert meta.get("page") == 3
+    assert meta.get("paragraph") == 1
 
 
 def test_get_tokenizer():

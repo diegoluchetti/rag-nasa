@@ -24,29 +24,40 @@ def _count_tokens(text: str, enc: tiktoken.Encoding) -> int:
     return len(enc.encode(text))
 
 
-def _split_into_blocks(md_text: str) -> list[tuple[int, str, str]]:
+# Comentário HTML inserido por docling_to_markdown para propagação de página (FR-2.3.6)
+PAGE_MARKER_RE = re.compile(r"^\s*<!--\s*page\s+(\d+)\s*-->\s*$", re.I)
+
+
+def _split_into_blocks(md_text: str) -> list[tuple[int, str, str, int]]:
     """
-    Divide o Markdown em blocos lógicos: (nível do título, título, conteúdo).
+    Divide o Markdown em blocos lógicos: (nível do título, título, conteúdo, página).
     Nível 0 = sem título (préâmbulo). Títulos #=1, ##=2, ###=3, ####=4.
+    Reconhece marcadores <!-- page N --> (inseridos na conversão PDF→MD) para página.
     """
-    blocks: list[tuple[int, str, str]] = []
+    blocks: list[tuple[int, str, str, int]] = []
     lines = md_text.split("\n")
     i = 0
     current_level = 0
     current_title = ""
     current_content: list[str] = []
+    current_page = 0
 
-    def flush(title: str, level: int, content: str) -> None:
+    def flush(title: str, level: int, content: str, page: int) -> None:
         if content.strip():
-            blocks.append((level, title, content.strip()))
+            blocks.append((level, title, content.strip(), page))
 
     while i < len(lines):
         line = lines[i]
-        # Detectar cabeçalho Markdown (# ## ### ####)
+        page_match = PAGE_MARKER_RE.match(line.strip())
+        if page_match:
+            flush(current_title, current_level, "\n".join(current_content), current_page)
+            current_page = int(page_match.group(1))
+            current_content = []
+            i += 1
+            continue
         match = re.match(r"^(#{1,6})\s+(.+)$", line.strip())
         if match:
-            # Salvar bloco anterior
-            flush(current_title, current_level, "\n".join(current_content))
+            flush(current_title, current_level, "\n".join(current_content), current_page)
             current_level = len(match.group(1))
             current_title = match.group(2).strip()
             current_content = []
@@ -55,7 +66,7 @@ def _split_into_blocks(md_text: str) -> list[tuple[int, str, str]]:
         current_content.append(line)
         i += 1
 
-    flush(current_title, current_level, "\n".join(current_content))
+    flush(current_title, current_level, "\n".join(current_content), current_page)
     return blocks
 
 
@@ -168,7 +179,7 @@ def chunk_markdown_file(
     chunks: list[dict[str, Any]] = []
     chunk_id = 0
 
-    for level, title, content in blocks:
+    for level, title, content, page in blocks:
         # Detectar apêndice (ex.: Appendix C, Apêndice C)
         is_appendix = bool(re.search(r"appendix\s+[a-z0-9]+", title, re.I))
         meta_base = {
@@ -176,6 +187,7 @@ def chunk_markdown_file(
             "section_level": level,
             "appendix": is_appendix,
             "source_file": md_path.name,
+            "page": page,
         }
         content_tokens = _count_tokens(content, enc)
 
@@ -184,7 +196,7 @@ def chunk_markdown_file(
             chunks.append({
                 "id": chunk_id,
                 "text": f"# {title}\n\n{content}" if title else content,
-                "metadata": {**meta_base},
+                "metadata": {**meta_base, "paragraph": 1},
             })
             continue
 
@@ -196,7 +208,7 @@ def chunk_markdown_file(
             chunks.append({
                 "id": chunk_id,
                 "text": header + part,
-                "metadata": {**meta_base, "sub_section_index": j},
+                "metadata": {**meta_base, "sub_section_index": j, "paragraph": j + 1},
             })
 
     # Aplicar overlap

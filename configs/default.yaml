@@ -21,6 +21,11 @@ neo4j:
   top_k: 5                        # número de chunks a retornar por query
   system_prompt_path: configs/prompts_nasa_system.txt
   temperature: 0.0
+  # LLM para pré-processar contexto (Design Decision 19): modelo pequeno, fonte injetada pela aplicação
+  use_llm_for_response: true      # false = retorna só os trechos recuperados (sem LLM)
+  llm_model: "qwen2.5:3b"         # modelo pequeno só para processamento (Ollama)
+  ollama_url: "http://localhost:11434"
+  llm_timeout: 90
 
 # --- Fase 2 (legado): RAG reranked — mantido para referência/comparação ---
 rag:
@@ -33,23 +38,46 @@ rag:
 dataset_gen:
   num_pairs: 1000
   seed: 42
+  max_context_tokens: 800
+  max_instruction_tokens: 128
+  max_response_tokens: 512
+  mix:
+    qa: 0.6
+    rewrite: 0.2
+    critique: 0.2
+  # use_llm: false = gera exemplos por fallback (sem Ollama); útil para verificação/CI
+  use_llm: false
+  # Modelo de LLM para geração (usado via Ollama na PoC quando use_llm: true)
+  llm_model: gemma3:4b
+  temperature: 0.3
 
-# --- Fase 4: Fine-Tuning (referência) ---
+# --- Fase 4: Fine-Tuning (ref: docs/PLANO_FASE4_FINETUNING_GGUF.md) ---
 finetuning:
   learning_rate: 2.0e-4
   epochs: 3
   lora_rank: 16
   lora_alpha: 32
+  lora_dropout: 0.05
   target_modules:
     - q_proj
     - k_proj
     - v_proj
     - o_proj
+  model_name: "unsloth/Llama-3.2-3B-Instruct"
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  use_qlora: false
+  max_seq_length: 1024
+  save_steps: 100
+  logging_steps: 10
+  output_dir: "models/nasa_se_3b_lora"
+  gguf_output_name: "nasa_se_assistant_3b"
 
 # --- Paths (relativos à raiz do projeto) ---
 paths:
   data_raw: data/raw
   data_markdown: data/markdown
   data_chunks: data/chunks
+  data_datasets: data/datasets
   vector_store: vector_store
   models: models

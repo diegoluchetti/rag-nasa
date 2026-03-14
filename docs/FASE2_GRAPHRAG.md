@@ -18,7 +18,7 @@
 
 ### 2.1 Ingerir chunks no Neo4j
 
-Lê `data/chunks/*.jsonl` e insere nós `Chunk` no Neo4j, com relação `NEXT` entre consecutivos e índice full-text em `Chunk.text`:
+Lê `data/chunks/*.jsonl` e insere nós `Chunk` no Neo4j (propriedades: `text`, `section_title`, `section_level`, `source_file`, `appendix`, `page`, `paragraph`), com relação `NEXT` entre consecutivos e índice full-text em `Chunk.text`. As propriedades `page` e `paragraph` vêm dos metadados da Fase 1 (marcadores no Markdown e chunker) e permitem que a resposta cite a origem no PDF (FR-2.3.6).
 
 ```bash
 python scripts/run_neo4j_ingest.py
@@ -35,7 +35,7 @@ python scripts/run_neo4j_query.py "Qual a diferença entre Verificação e Valid
 python scripts/run_neo4j_query.py "Sua pergunta" --log-dir log
 ```
 
-A saída é o **contexto** (chunks concatenados). Para gerar resposta com LLM + prompt NASA, use esse contexto em um pipeline externo (opcional).
+A saída é o **contexto** (chunks concatenados). Quando disponíveis, cada trecho inclui referência à página e ao parágrafo no PDF (ex.: “(p.42, parágrafo 2)”). Para gerar resposta com LLM + prompt NASA, use esse contexto em um pipeline externo (opcional).
 
 ---
 

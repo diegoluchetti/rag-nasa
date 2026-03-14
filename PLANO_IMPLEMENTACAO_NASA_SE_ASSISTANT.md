@@ -1,7 +1,19 @@
 # Plano de Implementação Passo a Passo — AI Systems Engineering Assistant (NASA SE Edition)
 
 > **Referência:** [PROMPT_NASA_SE_AI_ASSISTANT.md](./PROMPT_NASA_SE_AI_ASSISTANT.md)  
-> **Objetivo deste documento:** Detalhar cada passo da implementação, explicando o *o quê*, *por quê* e *como* em cada etapa, para execução ordenada e validada por checkpoints.
+> **Objetivo:** Detalhar cada passo da implementação e o estado atual. Fases 1–3 e motor de query (Fase 2) estão implementados; Fases 4–5 preparam o modelo fine-tunado (.gguf) e o notebook (.ipynb) como entregáveis finais, com foco em escalabilidade e restrições de custo (ferramentas locais/gratuitas quando possível).
+
+---
+
+## Estado atual da implementação
+
+| Fase | Status | Entregável principal |
+|------|--------|----------------------|
+| 1 — Ingestão | ✅ Implementada | PDF→MD (Docling), chunker, chunks JSONL com page/paragraph |
+| 2 — Query (Neo4j + LLM) | ✅ Implementada | Full-text Neo4j, LLM pré-processa contexto, fontes injetadas (DD19), métricas retrieval |
+| 3 — Dataset sintético | ✅ Implementada | dataset_gen (Ollama ou fallback), train/val JSONL, verificadores |
+| 4 — Fine-tuning | 🔲 Planejada | SLM + LoRA → export para .gguf |
+| 5 — Integração e avaliação | 🔲 Planejada | Pipeline RAG-tuned, métricas, .ipynb + modelo .gguf para o cliente |
 
 ---
 
@@ -9,10 +21,10 @@
 
 1. [Preparação do Ambiente](#0-preparação-do-ambiente)
 2. [Fase 1 — Ingestão Estruturada](#1-fase-1--ingestão-estruturada-checkpoint-1)
-3. [Fase 2 — RAG Avançado com Reranking](#2-fase-2--rag-avançado-com-reranking-checkpoint-2)
+3. [Fase 2 — Query: Neo4j + LLM (resposta com fontes intactas)](#2-fase-2--query-neo4j--llm-checkpoint-2)
 4. [Fase 3 — Geração de Dataset Sintético](#3-fase-3--geração-de-dataset-sintético-checkpoint-3)
-5. [Fase 4 — Fine-Tuning do SLM](#4-fase-4--fine-tuning-do-slm-checkpoint-4)
-6. [Fase 5 — Integração Final e Avaliação](#5-fase-5--integração-final-e-avaliação)
+5. [Fase 4 — Fine-Tuning e export para .gguf](#4-fase-4--fine-tuning-e-export-para-gguf-checkpoint-4)
+6. [Fase 5 — Integração, avaliação e entregáveis (.ipynb + .gguf)](#5-fase-5--integração-avaliação-e-entregáveis)
 
 ---
 
@@ -30,18 +42,21 @@
 rag-nasa/
 ├── data/
 │   ├── raw/                    # PDF original (NASA SE Handbook)
-│   ├── markdown/               # Saída do Docling
-│   └── chunks/                 # Chunks após Hierarchy Aware Chunker
+│   ├── markdown/               # Saída do Docling (com marcadores <!-- page N -->)
+│   ├── chunks/                 # Chunks JSONL (Fase 1) com page/paragraph
+│   ├── datasets/               # train/val JSONL (Fase 3)
+│   └── phase2_gold_questions.json  # Conjunto gold para Hit Rate/MRR
 ├── src/
-│   ├── ingestion/              # Scripts Fase 1 (Docling + Chunker)
-│   ├── rag/                    # Pipeline RAG + Reranker (Fase 2)
-│   ├── dataset_gen/            # Geração de pares instrução/resposta (Fase 3)
-│   └── evaluation/             # Scripts RAGAS e métricas (Fase 5)
-├── models/                     # LoRA/checkpoints do fine-tuning (Fase 4)
-├── vector_store/               # ChromaDB ou LanceDB persistido
-├── configs/                    # YAML/JSON de parâmetros por fase
-├── tests/                      # Testes e validação de checkpoints
-└── docs/                       # Documentação e relatórios
+│   ├── ingestion/              # Fase 1: Docling, chunker, config_loader
+│   ├── graphrag/               # Fase 2: Neo4j store, query_engine, retrieval_metrics
+│   ├── dataset_gen/            # Fase 3: schema, sampler, generator, postprocess, export
+│   └── evaluation/             # (Fase 5) Scripts de métricas e avaliação
+├── scripts/                    # run_ingestion, run_neo4j_ingest/query, run_dataset_gen, verificadores
+├── models/                     # LoRA/checkpoints (Fase 4); modelo .gguf final
+├── configs/                    # default.yaml, prompts_nasa_system.txt (guardrails: docs/GUARDRAILS_SYSTEM_PROMPT.md)
+├── log/                        # Logs de query, métricas, verificadores
+├── tests/                      # Testes e checkpoints
+└── docs/                       # Documentação, design decisions, requisitos
 ```
 
 **Detalhe:** O PDF do Handbook (SP-2016-6105-REV2) deve ser colocado em `data/raw/`. Se ainda não tiver o arquivo, obter da fonte oficial NASA.
@@ -157,6 +172,10 @@ rag-nasa/
 
 ---
 
+### (Implementado) Propagação de página e parágrafo
+
+- Na conversão PDF→MD (Docling), são inseridos marcadores `<!-- page N -->` (por lote de páginas). O chunker reconhece esses marcadores e preenche `metadata.page` e `metadata.paragraph` em cada chunk. Esses campos são ingeridos no Neo4j e usados na resposta (FR-2.3.6; Design Decision 18). Ver `docs/DESIGN_DECISIONS.md` seção 18.
+
 ### Passo 1.2.2 — Implementar o Hierarchy Aware Chunker (Tarefa 1.2)
 
 **O que fazer:** Implementar função ou classe (ex.: `src/ingestion/hierarchy_aware_chunker.py`) que:
@@ -204,17 +223,27 @@ Executar o script; se passar, marcar **Checkpoint 1 concluído** e só então av
 
 ---
 
-## 2. Fase 2 — RAG Avançado com Reranking (Checkpoint 2)
+## 2. Fase 2 — Query: Neo4j + LLM (Checkpoint 2)
 
-**Objetivo:** Busca semântica (Top-20) + Reranker (Top-3) + LLM com prompt NASA para respostas precisas.
+**Objetivo (implementado):** Recuperação full-text no Neo4j; LLM pequeno pré-processa o contexto; **fontes (seção, página, parágrafo) injetadas pela aplicação** (Design Decision 19). Hit Rate/MRR via conjunto gold. Sem API paga: Neo4j + Ollama.
 
 ---
 
-### Passo 2.1.1 — Escolher e Configurar o Modelo de Embedding
+### Implementado — Neo4j, ingestão e motor de query
+
+- Chunks em Neo4j como nós `Chunk` (text, section_title, page, paragraph); índice full-text. Scripts: `run_neo4j_ingest.py`, `run_neo4j_query.py`. Config: `neo4j.uri`, `top_k`, `use_llm_for_response`, `llm_model`, `ollama_url`. Ver `docs/NEO4J_SETUP.md`.
+- **LLM (Design Decision 19):** Se `use_llm_for_response: true`, apenas o **texto** dos trechos vai ao LLM (Ollama); a aplicação monta a seção **Fontes** com metadados do retrieval (sem o LLM gerar fontes). Fallback: sem LLM, retorna trechos formatados.
+- **Conjunto gold:** `data/phase2_gold_questions.json`; métricas em `src/graphrag/retrieval_metrics.py`; verificador: `run_phase2_requirements_verifier.py --run-reference-query` (PASS/FAIL).
+
+---
+
+### (Alternativa) Passo 2.1.1 — Vector store + embeddings
+
+*A implementação atual usa Neo4j full-text (sem embeddings). Abaixo, referência para uma variante com vector store.*
 
 **O que fazer:** Integrar um modelo de embeddings (nomic-embed-text ou bge-small-en-v1.5) para converter cada chunk em vetor.
 
-**Por quê:** A busca no vector store é por similaridade de vetores; a qualidade do embedding determina a qualidade do Top-K.
+**Por quê:** Caso se opte por busca semântica (ex.: ChromaDB/LanceDB), a qualidade do embedding determina o Top-K.
 
 **Como:**
 
@@ -337,7 +366,15 @@ Executar o script; se passar, marcar **Checkpoint 1 concluído** e só então av
 
 ## 3. Fase 3 — Geração de Dataset Sintético (Checkpoint 3)
 
-**Objetivo:** Produzir 1.000 pares instrução/resposta a partir do Markdown (Apêndice C e Processos), em JSONL, para fine-tuning.
+**Objetivo (implementado):** Produzir pares instrução/resposta a partir dos chunks (Fase 1), em JSONL (train/val), para fine-tuning. Geração via LLM (Ollama) ou **fallback sem LLM** (exemplos sintéticos) para rodar sem custo de API.
+
+---
+
+### Implementado — dataset_gen e verificador
+
+- **Pacote:** `src/dataset_gen/` — `schema.py` (DatasetExample), `sampler.py` (contextos a partir de chunks), `generator.py` (LLM ou fallback), `postprocess.py`, `export.py`. Config: `dataset_gen.num_pairs`, `seed`, `use_llm`, `llm_model` (Ollama).
+- **Saída:** `data/datasets/nasa_se_synthetic_train.jsonl` e `_val.jsonl` (split 90/10); métricas em `log/dataset_phase3_*.json`.
+- **Verificador:** `scripts/run_phase3_requirements_verifier.py` — valida schema, arquivos, ≥100 exemplos, cobertura por tags; resultado PASS/FAIL.
 
 ---
 
@@ -407,9 +444,11 @@ Executar o script; se passar, marcar **Checkpoint 1 concluído** e só então av
 
 ---
 
-## 4. Fase 4 — Fine-Tuning do SLM (Checkpoint 4)
+## 4. Fase 4 — Fine-Tuning e export para .gguf (Checkpoint 4)
 
-**Objetivo:** Fine-tunar Llama 3.2 3B (ou Qwen 2.5 3B) com Unsloth (SFT + LoRA/QLoRA) no dataset da Fase 3.
+**Objetivo:** Fine-tunar um SLM (ex.: Llama 3.2 3B ou Qwen 2.5 3B) com Unsloth (SFT + LoRA/QLoRA) no dataset da Fase 3 e **exportar o modelo para .gguf** para entrega ao cliente (inferência local sem dependência de API paga). Considerar restrições de custo: preferir ambiente local (CUDA se disponível) e modelos open-source.
+
+> **Plano detalhado:** [docs/PLANO_FASE4_FINETUNING_GGUF.md](docs/PLANO_FASE4_FINETUNING_GGUF.md) — pré-requisitos, entradas/saídas, config, passos 4.0–4.6, validação Checkpoint 4, troubleshooting e estrutura de código sugerida.
 
 ---
 
@@ -453,22 +492,25 @@ Executar o script; se passar, marcar **Checkpoint 1 concluído** e só então av
 
 ---
 
-### Passo 4.3 — Validação do Checkpoint 4
+### Passo 4.3 — Export para .gguf (entregável)
 
-**O que fazer:** Plotar curva de loss e comparar modelo base vs tunado.
+**O que fazer:** Exportar o modelo fine-tunado (base + LoRA mesclado) para **formato .gguf** para que o cliente possa rodar inferência local (ex.: llama.cpp, Ollama) **sem custo de API**.
 
-**Critérios:**
+**Por quê:** Entregável acordado: modelo LLM em .gguf; permite uso em ambiente controlado e escalável sem depender de serviços pagos.
 
-1. **Curva de Loss:** Durante o treino, logar loss de treino (e validação se houver split); ao final, plotar gráfico (epoch vs loss) e salvar em `docs/` ou `models/`.
-2. **Teste comparativo:** Para 5–10 prompts (ex.: “Escreva um requisito NASA para que o sistema deve registrar logs”), gerar resposta com modelo base e com modelo tunado. O tunado deve seguir melhor o formato NASA (Shall, estrutura, terminologia) e não inventar fora do estilo.
+**Como:** Após o treino, mesclar LoRA no modelo base e exportar para GGUF (ferramentas Unsloth/Hugging Face ou script de conversão). Salvar em `models/` (ex.: `nasa_se_assistant_3b.gguf`). Documentar no .ipynb como carregar e usar.
 
-**Como:** Usar callbacks ou logs do Trainer para extrair loss por step/epoch; script em Python (matplotlib) para gerar o plot. Script de inferência que carrega base e tunado (merge do LoRA ou carregar adapter) e gera para os mesmos prompts; comparação qualitativa (e opcionalmente métricas de similaridade com respostas de referência). Marcar **Checkpoint 4 concluído** quando a curva for saudável e o tunado for claramente melhor no formato NASA.
+### Passo 4.4 — Validação do Checkpoint 4
+
+**O que fazer:** Plotar curva de loss; comparar modelo base vs tunado; validar o .gguf em inferência.
+
+**Critérios:** Curva de loss saudável; modelo tunado segue melhor o formato NASA em teste comparativo; arquivo .gguf carrega e gera respostas coerentes.
 
 ---
 
-## 5. Fase 5 — Integração Final e Avaliação
+## 5. Fase 5 — Integração, avaliação e entregáveis (.ipynb + .gguf)
 
-**Objetivo:** Integrar o modelo fine-tunado ao pipeline RAG (RAG-tuned) e avaliar com RAGAS.
+**Objetivo:** Integrar o modelo fine-tunado (.gguf) ao fluxo de resposta; avaliar com métricas (RAGAS ou equivalentes); entregar ao cliente um **notebook (.ipynb)** executável e o **modelo .gguf** para uso local, com documentação de como testar e medir. Escalável e com restrições de custo: evitar APIs pagas no fluxo final; preferir Ollama/llama.cpp com o .gguf.
 
 ---
 
@@ -499,28 +541,28 @@ Executar o script; se passar, marcar **Checkpoint 1 concluído** e só então av
 
 ---
 
-### Passo 5.2 — Entregáveis Finais
+### Passo 5.2 — Entregáveis Finais (cliente)
 
-**O que fazer:** Consolidar artefatos e documentação.
+**O que fazer:** Consolidar o que o cliente recebe: notebook executável e modelo pronto para inferência local.
 
-- **Pipeline RAG + Reranker:** Código versionado em `src/rag/`, config em `configs/`, e instruções em `README.md` ou `docs/run_rag.md` para: ingestão (Fase 1), construção do vector store, e execução de uma pergunta.
-- **Modelo fine-tunado:** LoRA/checkpoint em `models/` e instruções para carregar e mesclar (ou exportar para HuggingFace).
-- **Relatório de métricas:** Hit Rate, MRR (Checkpoint 2), Faithfulness, Answer Relevance, Context Precision (Fase 5) em `docs/evaluation_report.md`.
-- **Documentação:** Como executar ingestão, treino e inferência (passo a passo ou comandos) em `docs/`.
+- **Notebook (.ipynb):** Um Jupyter notebook que: (1) documenta o pipeline (ingestão → chunks → Neo4j opcional / uso do modelo); (2) permite carregar o modelo .gguf (via Ollama ou llama.cpp); (3) executa perguntas de exemplo e exibe resposta + fontes; (4) opcionalmente roda células de avaliação (métricas). Tudo reproduzível sem APIs pagas.
+- **Modelo (.gguf):** Arquivo do modelo fine-tunado em `models/` (ex.: `nasa_se_assistant_3b.gguf`) para inferência local (Ollama, llama.cpp), sem custo de uso por chamada.
+- **Relatório de métricas:** Hit Rate, MRR (Fase 2), Faithfulness, Answer Relevance, Context Precision (Fase 5) em `docs/evaluation_report.md` ou dentro do .ipynb.
+- **Documentação:** Como executar o .ipynb, como carregar o .gguf e como medir o sistema (em `docs/` ou no próprio notebook). Escalabilidade: arquitetura pensada para rodar em máquina do cliente com restrições financeiras (ferramentas locais/gratuitas).
 
 ---
 
 ## Resumo da Ordem de Execução
 
-| # | Passo | Fase | Checkpoint |
-|---|--------|------|------------|
+| # | Passo | Fase | Status |
+|---|--------|------|--------|
 | 0 | Preparação (diretórios, venv, config) | - | - |
-| 1 | Docling: script PDF→MD + Hierarchy Aware Chunker + validação tabelas/hierarquia | 1 | ✅ Checkpoint 1 |
-| 2 | Vector store + embedding + Top-K; Reranker Top-20→Top-3; prompt NASA; Hit Rate/MRR + pergunta Verificação vs Validação | 2 | ✅ Checkpoint 2 |
-| 3 | Dataset 1k pares (Apêndice C + Processos); JSONL; revisão 20 amostras | 3 | ✅ Checkpoint 3 |
-| 4 | Unsloth SFT + LoRA; treino; curva de loss; comparação base vs tunado | 4 | ✅ Checkpoint 4 |
-| 5 | RAG-tuned integrado; RAGAS; relatório e documentação final | 5 | Entregáveis |
+| 1 | Docling PDF→MD + Hierarchy Aware Chunker + page/paragraph; validação tabelas/hierarquia | 1 | ✅ Implementado |
+| 2 | Neo4j ingest + full-text; LLM pré-processamento (fontes injetadas); gold set + Hit Rate/MRR; verificador | 2 | ✅ Implementado |
+| 3 | dataset_gen (Ollama ou fallback); train/val JSONL; verificador Fase 3 | 3 | ✅ Implementado |
+| 4 | Unsloth SFT + LoRA; treino; **export para .gguf**; validação | 4 | 🔲 Planejado |
+| 5 | RAG-tuned com .gguf; avaliação; **.ipynb + modelo .gguf** para o cliente | 5 | 🔲 Planejado |
 
 ---
 
-*Plano de implementação baseado em [PROMPT_NASA_SE_AI_ASSISTANT.md](./PROMPT_NASA_SE_AI_ASSISTANT.md). Execute na ordem e valide cada checkpoint antes de avançar.*
+*Plano baseado em [PROMPT_NASA_SE_AI_ASSISTANT.md](./PROMPT_NASA_SE_AI_ASSISTANT.md). Entregáveis finais: notebook executável (.ipynb) e modelo LLM (.gguf) para uso local, com foco em escalabilidade e restrições de custo (evitar APIs pagas).*

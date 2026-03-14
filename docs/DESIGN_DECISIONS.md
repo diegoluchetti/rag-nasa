@@ -113,7 +113,7 @@ Isso gerava **falsos positivos** (“tabela truncada”) e fazia o Checkpoint 1 
 ### Decisão
 
 - Chunks salvos em **JSONL**: uma linha por chunk, cada registro com **`text`** e **`metadata`**.
-- Metadados incluem: `section_title`, `section_level`, `appendix` (detectado por regex no título), `source_file`.
+- Metadados incluem: `section_title`, `section_level`, `appendix` (detectado por regex no título), `source_file`, **`page`** e **`paragraph`** (quando disponíveis; ver decisão 18).
 - Nome do arquivo: `{stem_do_markdown}_chunks.jsonl` em `data/chunks/`.
 
 ---
@@ -200,11 +200,168 @@ Isso gerava **falsos positivos** (“tabela truncada”) e fazia o Checkpoint 1 
 
 **Decisão:**
 - **Queries:** Para cada query, registrar em `log/` a pergunta, o método (global/local), timestamp ou run_id, e um identificador da resposta (hash ou primeiros caracteres) para reprodutibilidade e métricas.
-- **Verificador de requisitos:** Um script dedicado (`scripts/run_phase2_requirements_verifier.py`) percorre todos os FR e NFR da Fase 2, verifica critérios de aceite (existência de arquivos, config, índice, resposta de referência, etc.) e gera relatório em `log/` (JSON + TXT) com status PASS/FAIL/SKIP e métricas evidentes (ex.: número de arquivos em input, presença de parquets, resultado do Checkpoint 2).
+- **Verificador de requisitos:** Um script dedicado (`scripts/run_phase2_requirements_verifier.py`) percorre todos os FR e NFR da Fase 2, verifica critérios de aceite (existência de arquivos, config, índice, resposta de referência, etc.) e gera relatório em `log/` (JSON + TXT) com status PASS/FAIL e métricas evidentes (ex.: número de arquivos em input, resultado do Checkpoint 2). Pré-condições não atendidas contam como FAIL.
 
 **Motivação:**
 - Rastreabilidade e auditoria; possibilidade de regressão e comparação entre runs.
 - Garantir que a implementação cumpra todos os requisitos documentados em `docs/REQUIREMENTS_FASE2.md` com evidências objetivas.
+
+---
+
+## 16. Escolha de LLM para Fase 3 (PoC local com Ollama)
+
+**Decisão:** Para a Fase 3 (geração de dataset sintético) será usado, em PoC, um LLM leve da família **Qwen 3.5 ~4B** rodando localmente via **Ollama** (backend de inferência), preferencialmente em formato **GGUF** (ex.: `unsloth/Qwen3.5-4B-GGUF`, em destaque na lista de modelos em tendência no Hugging Face — ver [Modelos em tendência](https://huggingface.co/models?p=1&sort=trending)).
+
+**Motivação:**
+
+- **Tamanho / custo:** ~4B parâmetros é pequeno o suficiente para rodar em GPU/CPU de desenvolvimento, mas grande o bastante para gerar instruções/respostas úteis e coerentes.
+- **Qualidade / idioma:** Qwen 3.5 é instrução‑tunado, multilíngue e razoavelmente forte em raciocínio e escrita técnica, adequado para produzir texto em inglês e/ou português técnico de engenharia de sistemas.
+- **Integração com Ollama:** modelos Qwen 3.x já são suportados ou facilmente importáveis em Ollama via GGUF, permitindo:
+  - servidor local HTTP (`http://localhost:11434`) sem dependência de APIs externas,
+  - controle total de parâmetros (temperature, top_p, num_ctx, etc.) por requisição.
+
+**Arquitetura de inferência (Fase 3):**
+
+- **Camada de geração:** função `call_llm(system_prompt, user_prompt, max_tokens)` em `src/dataset_gen/generator.py` será o ponto único de chamada ao LLM.
+- **Backend:** `call_llm` faz requisições HTTP para o endpoint do Ollama (`/api/generate`), passando:
+  - `model`: nome do modelo configurado (ex.: `qwen3.5-4b` ou equivalente no catálogo do Ollama),
+  - `system`: prompt NASA (persona, restrição ao Handbook),
+  - `prompt`: texto formatado com contexto + instrução de geração,
+  - `options`: `{ "temperature": 0.3, "num_ctx": 8192, ... }`.
+- **Config:** nome do modelo e parâmetros de inferência podem ser adicionados à seção `dataset_gen` no `configs/default.yaml` (futuro): `llm_model`, `temperature`, `max_new_tokens`, etc.
+
+**Trade‑offs:**
+
+- Para PoC, prioriza‑se rodar **tudo local** (sem custo de API), aceitando performance e qualidade moderadas.
+- Caso a qualidade do dataset sintético com ~4B não seja suficiente, é possível:
+  - subir temporariamente um modelo maior (ex.: Qwen 3.5 9B ou 14B),
+  - ou usar um provedor externo (OpenAI, Azure) apenas para geração Fase 3, mantendo a mesma interface `call_llm`.
+
+---
+
+## 17. Estratégia de geração de dataset sintético (Fase 3)
+
+**Decisão:** A Fase 3 foi implementada como um pipeline modular, separado em pacote `src/dataset_gen/`, com geração inicialmente em modo **stub** (sem LLM real), mas com todos os pontos de extensão e artefatos alinhados aos requisitos.
+
+**Componentes principais:**
+
+- `src/dataset_gen/schema.py`:
+  - Define `DatasetExample` (FR-3.1.1), compatível com export JSONL e fácil uso em Fase 4 (fine‑tuning).
+- `src/dataset_gen/sampler.py`:
+  - Função `_load_all_chunks` lê `data/chunks/*.jsonl` (Fase 1).
+  - `sample_contexts_by_section(num_contexts, seed, config_name)` agrupa por `section_title` e cria `ContextSpec` com texto, seção e ids de chunks; adiciona tags simples (`vv`, `requirements`) quando identifica termos relevantes.
+- `src/dataset_gen/generator.py`:
+  - Define `call_llm(...)` como ponto único de integração com o LLM (Ollama no PoC).
+  - `generate_example_from_context(...)` hoje é um **stub** (retorna `None`), mas já recebe `ContextSpec`, `system_prompt` e limites de tokens – pronto para receber a chamada real ao LLM.
+  - `generate_dataset(num_pairs, seed, config_name)` orquestra: lê config `dataset_gen`, carrega o prompt NASA de `neo4j.system_prompt_path`, amostra contextos e tenta gerar até `num_pairs` exemplos.
+- `src/dataset_gen/postprocess.py`:
+  - Implementa validações simples (`is_valid_example`, `filter_examples`): comprimentos mínimos, campos obrigatórios, presença de tags – base para NFR-3.2.x.
+- `src/dataset_gen/export.py`:
+  - Salva exemplos em `data/datasets/nasa_se_synthetic_train.jsonl` e `..._val.jsonl`, com split padrão 90/10 (FR-3.4.x).
+- `scripts/run_dataset_gen.py`:
+  - Pipeline CLI: lê config, roda geração, pós-processa, exporta dataset e grava métricas em `log/dataset_phase3_*.json`.
+
+**Motivação:**
+
+- Separar claramente **amostragem, geração, pós‑processo e export**:
+  - facilita trocar o LLM ou ajustar heurísticas sem quebrar o restante,
+  - permite rodar só partes do pipeline (ex.: apenas sampler + export de contextos).
+- Começar com um **stub** evita dependência imediata de um LLM externo/local, mantendo testes e estrutura prontos. A ativação via Ollama será feita apenas em `call_llm`, sem tocar o resto do código.
+
+**Impacto nos próximos passos:**
+
+- Fase 4 pode consumir diretamente `data/datasets/*.jsonl` (carregando `DatasetExample` via `dataclasses` ou convertendo para `datasets.Dataset` do Hugging Face).
+- Para subir a qualidade do dataset, basta:
+  - implementar `call_llm` (Ollama + Qwen 3.5 4B),
+  - enriquecer `generate_example_from_context` com prompts mais específicos (templates em um módulo futuro `prompt_templates.py`),
+  - ajustar filtros em `postprocess.py`.
+
+---
+
+## 18. Propagação de página e parágrafo (FR-2.3.6)
+
+### Problema
+
+O FR-2.3.6 exige que a resposta do sistema mencione **página e parágrafo** de origem no PDF quando possível. Inicialmente os nós Chunk no Neo4j e os chunks JSONL da Fase 1 não tinham essas informações, então a resposta nunca as exibía.
+
+### Decisão
+
+- **Origem dos dados:** A página é inferida na **conversão PDF→Markdown** (Fase 1). Ao processar em lotes, o Docling recebe `page_range=(start, end)`; ao concatenar o Markdown de cada lote, inserimos um marcador HTML no texto: `<!-- page N -->` (onde N é a primeira página daquele lote). No fluxo sem lotes (documento inteiro), inserimos `<!-- page 1 -->` no início.
+- **Chunker:** O `hierarchy_aware_chunker` reconhece o padrão `<!-- page N -->` ao dividir o Markdown em blocos. Cada bloco recebe o número da **última página** vista até aquele ponto. O **parágrafo** é o índice (1-based) do sub-bloco quando um bloco é subdividido por tamanho (ex.: 1 se o bloco coube em um chunk, 1/2/3 se foi dividido em três chunks).
+- **JSONL:** Os metadados de cada chunk passam a incluir `page` (int) e `paragraph` (int). Valores 0 indicam ausência (documento convertido sem marcadores ou bloco sem página conhecida).
+- **Neo4j:** Na ingestão (`neo4j_store.ingest_chunks`), os nós Chunk passam a ter propriedades **`page`** e **`paragraph`**, lidas dos metadados do JSONL. A query full-text já retorna `node.page` e `node.paragraph`; o `query_engine._format_hit` formata o cabeçalho de cada trecho como `[i] {section_title} (p.{page}, parágrafo {paragraph})` quando ambos são > 0.
+- **Formato na resposta:** O usuário vê, por trecho, algo como “(p.42, parágrafo 2)”. Se `page` ou `paragraph` forem 0 ou ausentes, o cabeçalho não inclui essa parte (comportamento já implementado em `_format_hit`).
+
+### Fluxo end-to-end
+
+1. **Docling** (lotes): cada parte do MD é prefixada com `\n\n<!-- page {start} -->\n\n`.
+2. **Chunker**: `_split_into_blocks` detecta o marcador e associa cada bloco a uma página; em `chunk_markdown_file`, cada chunk recebe `metadata["page"]` e `metadata["paragraph"]`.
+3. **JSONL**: gravado com `page` e `paragraph` em cada linha.
+4. **Neo4j ingest**: cria nós com `page` e `paragraph`.
+5. **Query**: full-text devolve os campos; `_format_hit` exibe “(p.X, parágrafo Y)” quando disponível.
+
+Para que as respostas passem a mostrar página/parágrafo, é necessário **re-executar** o pipeline a partir da conversão PDF→MD (ou pelo menos Markdown→chunks) e depois **re-ingestão** no Neo4j.
+
+---
+
+## 19. LLM para pré-processamento do contexto (resposta melhor, fonte intacta)
+
+### Decisão
+
+- O fluxo de resposta à pergunta do usuário deve usar um **LLM para pré-processar o contexto** recuperado (Neo4j), de modo a produzir uma **resposta mais clara, focada e legível** (resumo, reformulação, destaque do que é relevante à pergunta).
+- **Restrição crítica:** a **informação de fonte** (seção, página, parágrafo — e, se aplicável, identificador do chunk) deve **permanecer intacta e não processada pelo LLM**. Ou seja: o modelo **não** deve gerar nem alterar referências de fonte; isso evita alucinações (citar página ou seção inexistentes). A aplicação é responsável por **anexar** ou **injetar** as referências exatas aos trechos, usando sempre os metadados retornados pelo retrieval.
+- O **modelo de LLM** usado nesse passo deve ser **pequeno** (ex.: 4B–7B parâmetros), suficiente apenas para pré-processamento do texto (resumir, reformular), e pode rodar localmente (ex.: Ollama) para baixo custo e latência controlada.
+
+### Abordagem de implementação sugerida
+
+1. **Retrieval** continua como hoje: full-text no Neo4j retorna uma lista de **hits** com `text`, `section_title`, `page`, `paragraph` (e `id` do chunk).
+2. **Entrada ao LLM:** a aplicação envia ao modelo apenas a **pergunta do usuário** e o **texto** dos trechos (opcionalmente identificados como “Bloco 1”, “Bloco 2”, etc., sem passar página/parágrafo no texto para o modelo gerar). O prompt instrui o LLM a responder **apenas** com base nesses trechos, sem inventar fontes.
+3. **Saída do LLM:** o modelo devolve apenas o **conteúdo processado** (prosa, resumo ou resposta estruturada). A aplicação **não** usa a saída do LLM para extrair ou inferir página/parágrafo.
+4. **Montagem da resposta final:** a aplicação associa cada parte da resposta (ou cada bloco utilizado) aos metadados do hit correspondente e **injeta** as referências exatas: por exemplo, “Segundo [Seção X, p.42, parágrafo 2]: …” ou uma seção “Fontes:” ao final listando (section_title, page, paragraph) dos hits usados, sempre a partir dos dados do retrieval, nunca do texto gerado pelo LLM.
+
+### Resumo
+
+| Aspecto | Decisão |
+|--------|---------|
+| Papel do LLM | Pré-processar o contexto para melhorar a resposta (clareza, foco). |
+| Fonte (seção, p., parágrafo) | Intacta; não processada pelo LLM; anexada/injetada pela aplicação. |
+| Tamanho do modelo | Pequeno (4B–7B), só para processamento. |
+| Objetivo da restrição | Evitar alucinações em citações e manter rastreabilidade (FR-2.3.6). |
+
+---
+
+## 20. Fine-tuning da Fase 4 em Google Colab (falta de poder computacional local)
+
+### Contexto
+
+O fine-tuning com Unsloth (SFT + LoRA) e export para .gguf requer GPU com CUDA e VRAM adequada (recomendado ≥8 GB para modelos 3B). O ambiente de desenvolvimento do projeto pode não dispor desse hardware.
+
+### Decisão
+
+- **Executar o pipeline da Fase 4 (treino + export .gguf) em Google Colab** (ou ambiente equivalente, ex.: Kaggle, RunPod) quando não houver GPU local suficiente.
+- O repositório continua com scripts e módulos **agnósticos de ambiente**: aceitam caminhos explícitos para dataset (train/val) e diretório de saída, de modo que:
+  - **Local:** o script `run_finetuning.py` usa `configs/default.yaml` e paths relativos ao projeto.
+  - **Colab:** um notebook (ex.: `notebooks/fase4_finetuning_colab.ipynb`) instala Unsloth, monta/copia o dataset (Drive ou upload), chama a mesma lógica de treino/export com paths no ambiente Colab (ex.: `/content/...`) e salva o .gguf no Google Drive ou faz download.
+- **Documentação:** O plano da Fase 4 ([docs/PLANO_FASE4_FINETUNING_GGUF.md](PLANO_FASE4_FINETUNING_GGUF.md)) e o próprio notebook explicam como subir o dataset para o Colab (zip dos JSONL, Drive, ou clone do repo) e onde o .gguf é gravado.
+
+### Implementação
+
+- Módulos em `src/finetuning/` (**data_loader**, **train**, **export_gguf**) não dependem da raiz do projeto: recebem **train_path**, **val_path**, **output_dir** e um dicionário de parâmetros de treino (learning_rate, epochs, model_name, etc.).
+- O script `scripts/run_finetuning.py` pode ser invocado com config do repo (modo local) ou com argumentos de linha de comando (modo Colab ou CI).
+- O notebook Colab:
+  1. Verifica/ativa GPU (T4 ou superior).
+  2. Instala Unsloth (e dependências) com o wheel recomendado para Colab.
+  3. Prepara o dataset: upload dos dois JSONL ou clone do repo e uso de `data/datasets/*.jsonl`.
+  4. Chama as funções de load dataset → train → export GGUF com paths e params definidos na própria célula (ou lendo um YAML copiado).
+  5. Salva o .gguf no Drive ou oferece download.
+
+### Resumo
+
+| Aspecto | Decisão |
+|--------|---------|
+| Onde rodar o treino | Google Colab (ou similar) quando não houver GPU local adequada. |
+| Compatibilidade | Código aceita paths explícitos e params em dict; funciona local e Colab. |
+| Entregável .gguf | Baixado do Colab ou copiado do Drive para `models/` no repo, para uso na Fase 5. |
 
 ---
 
@@ -216,6 +373,7 @@ Isso gerava **falsos positivos** (“tabela truncada”) e fazia o Checkpoint 1 
 - **Prompt do sistema:** [PROMPT_NASA_SE_AI_ASSISTANT.md](../PROMPT_NASA_SE_AI_ASSISTANT.md)
 - **Fase 1 e troubleshooting:** [FASE1_CHECKPOINT1.md](FASE1_CHECKPOINT1.md)
 - **Arquitetura Fase 1:** [ARQUITETURA_FASE1.md](ARQUITETURA_FASE1.md)
+- **Guardrails do system prompt:** [GUARDRAILS_SYSTEM_PROMPT.md](GUARDRAILS_SYSTEM_PROMPT.md)
 
 ---
 

@@ -1,7 +1,7 @@
 """
 Verificador de requisitos da Fase 2 (grafo em Neo4j).
 Confronta a implementação com docs/REQUIREMENTS_FASE2.md e gera relatório em log/
-com status PASS/FAIL/SKIP e métricas evidentes.
+com status PASS/FAIL. Pré-condições não atendidas são FAIL (corrigir e rodar novamente).
 Uso (na raiz do projeto): python scripts/run_phase2_requirements_verifier.py [--run-reference-query]
 """
 import argparse
@@ -54,13 +54,13 @@ def _check_fr_2_1_2(config, report, metrics):
         n = get_chunk_count(driver, db)
         driver.close()
         if n == 0:
-            report["FR-2.1.2"] = "SKIP"
+            report["FR-2.1.2"] = "FAIL"
             report["_comments"]["FR-2.1.2"] = "Neo4j sem chunks; rode python scripts/run_neo4j_ingest.py"
             return
         report["FR-2.1.2"] = "PASS"
         metrics["neo4j_chunk_count"] = n
     except Exception as e:
-        report["FR-2.1.2"] = "SKIP"
+        report["FR-2.1.2"] = "FAIL"
         report["_comments"]["FR-2.1.2"] = f"Neo4j inacessível ou não ingerido: {e}"
 
 
@@ -123,13 +123,13 @@ def _check_fr_2_2_3(config, report, metrics):
         n = get_chunk_count(driver, neo.get("database", "neo4j"))
         driver.close()
         if n == 0:
-            report["FR-2.2.3"] = "SKIP"
+            report["FR-2.2.3"] = "FAIL"
             report["_comments"]["FR-2.2.3"] = "Neo4j sem chunks; execute python scripts/run_neo4j_ingest.py"
             return
         report["FR-2.2.3"] = "PASS"
         metrics["neo4j_chunk_count"] = n
     except Exception as e:
-        report["FR-2.2.3"] = "SKIP"
+        report["FR-2.2.3"] = "FAIL"
         report["_comments"]["FR-2.2.3"] = f"Neo4j inacessível: {e}"
 
 
@@ -172,10 +172,10 @@ def _check_fr_2_4(report, metrics, run_reference_query: bool):
 
     # 2.4.1 e 2.4.3: dependem de rodar a query de referência
     if not run_reference_query:
-        report["FR-2.4.1"] = "SKIP"
+        report["FR-2.4.1"] = "FAIL"
         report["_comments"]["FR-2.4.1"] = "Use --run-reference-query para validar resposta Verificação vs Validação"
-        report["FR-2.4.3"] = "SKIP"
-        report["_comments"]["FR-2.4.3"] = "Métricas Hit Rate/MRR requerem conjunto de perguntas gold"
+        report["FR-2.4.3"] = "FAIL"
+        report["_comments"]["FR-2.4.3"] = "Métricas Hit Rate/MRR requerem conjunto de perguntas gold; implemente e rode com --run-reference-query"
         metrics["reference_query_run"] = False
         return
 
@@ -205,18 +205,40 @@ def _check_fr_2_4(report, metrics, run_reference_query: bool):
         metrics["reference_has_validation"] = has_validation
         metrics["reference_has_requirements"] = has_requirements
     except FileNotFoundError as e:
-        report["FR-2.4.1"] = "SKIP"
+        report["FR-2.4.1"] = "FAIL"
         report["_comments"]["FR-2.4.1"] = f"Índice não disponível: {e}"
         metrics["reference_query_run"] = False
     except Exception as e:
-        report["FR-2.4.1"] = "SKIP"
+        report["FR-2.4.1"] = "FAIL"
         report["_comments"]["FR-2.4.1"] = f"Erro ao rodar query: {e}"
         metrics["reference_query_run"] = False
 
-    # 2.4.3: Hit Rate / MRR - sem gold set ainda, marcamos como SKIP com nota
-    report["FR-2.4.3"] = "SKIP"
-    report["_comments"]["FR-2.4.3"] = "Conjunto de perguntas gold não implementado; registrar manualmente se necessário"
-    metrics["retrieval_metrics_available"] = False
+    # 2.4.3: Hit Rate / MRR — computar com conjunto gold (data/phase2_gold_questions.json)
+    try:
+        from src.graphrag.retrieval_metrics import compute_retrieval_metrics, load_gold_questions
+        if not load_gold_questions():
+            report["FR-2.4.3"] = "FAIL"
+            report["_comments"]["FR-2.4.3"] = "Arquivo data/phase2_gold_questions.json ausente"
+            metrics["retrieval_metrics_available"] = False
+        else:
+            from src.ingestion.config_loader import load_config
+            cfg = load_config()
+            retrieval_metrics = compute_retrieval_metrics(cfg)
+            metrics["retrieval_hit_rate"] = retrieval_metrics.get("hit_rate")
+            metrics["retrieval_mrr"] = retrieval_metrics.get("mrr")
+            metrics["retrieval_num_questions"] = retrieval_metrics.get("num_questions")
+            if retrieval_metrics.get("num_questions", 0) > 0 and "hit_rate" in retrieval_metrics and "mrr" in retrieval_metrics:
+                report["FR-2.4.3"] = "PASS"
+                report["_comments"]["FR-2.4.3"] = f"Hit Rate={retrieval_metrics['hit_rate']}, MRR={retrieval_metrics['mrr']}"
+                metrics["retrieval_metrics_available"] = True
+            else:
+                report["FR-2.4.3"] = "FAIL"
+                report["_comments"]["FR-2.4.3"] = "Métricas não computadas corretamente"
+                metrics["retrieval_metrics_available"] = False
+    except Exception as e:
+        report["FR-2.4.3"] = "FAIL"
+        report["_comments"]["FR-2.4.3"] = str(e)
+        metrics["retrieval_metrics_available"] = False
 
 
 def _check_nfr_2_1(config, report, metrics):
@@ -304,9 +326,8 @@ def main() -> None:
     metrics["report"] = {k: v for k, v in report.items() if not k.startswith("_")}
     pass_count = sum(1 for k, v in report.items() if not k.startswith("_") and v == "PASS")
     fail_count = sum(1 for k, v in report.items() if not k.startswith("_") and v == "FAIL")
-    skip_count = sum(1 for k, v in report.items() if not k.startswith("_") and v == "SKIP")
-    total = pass_count + fail_count + skip_count
-    metrics["summary"] = {"PASS": pass_count, "FAIL": fail_count, "SKIP": skip_count, "total": total}
+    total = pass_count + fail_count
+    metrics["summary"] = {"PASS": pass_count, "FAIL": fail_count, "total": total}
 
     log_dir = PROJECT_ROOT / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -320,7 +341,7 @@ def main() -> None:
     lines = [
         "Fase 2 (GraphRAG) — Verificação de requisitos",
         f"Gerado em: {metrics['collected_at']}",
-        f"Resumo: PASS={pass_count} FAIL={fail_count} SKIP={skip_count} total={total}",
+        f"Resumo: PASS={pass_count} FAIL={fail_count} total={total}",
         "",
     ]
     for k in sorted(report.keys()):
@@ -332,7 +353,7 @@ def main() -> None:
 
     print(f"Relatório JSON: {json_path}")
     print(f"Relatório TXT: {txt_path}")
-    print(f"PASS={pass_count} FAIL={fail_count} SKIP={skip_count}")
+    print(f"PASS={pass_count} FAIL={fail_count}")
 
     if fail_count > 0:
         sys.exit(1)

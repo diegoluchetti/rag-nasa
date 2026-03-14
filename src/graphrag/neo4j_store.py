@@ -108,6 +108,8 @@ def ingest_chunks(config: dict[str, Any] | None = None) -> int:
             section_level = int(meta.get("section_level", 0))
             source_file = meta.get("source_file") or ""
             appendix = bool(meta.get("appendix", False))
+            page = int(meta.get("page", 0))
+            paragraph = int(meta.get("paragraph", 0))
             session.run(
                 f"""
                 CREATE (c:{CHUNK_LABEL} {{
@@ -116,7 +118,9 @@ def ingest_chunks(config: dict[str, Any] | None = None) -> int:
                     section_title: $section_title,
                     section_level: $section_level,
                     source_file: $source_file,
-                    appendix: $appendix
+                    appendix: $appendix,
+                    page: $page,
+                    paragraph: $paragraph
                 }})
                 """,
                 id=chunk_id,
@@ -125,6 +129,8 @@ def ingest_chunks(config: dict[str, Any] | None = None) -> int:
                 section_level=section_level,
                 source_file=source_file,
                 appendix=appendix,
+                page=page,
+                paragraph=paragraph,
             )
 
         # Criar relação NEXT entre consecutivos (grafo de sequência)
@@ -165,7 +171,12 @@ def query_fulltext(
             """
             CALL db.index.fulltext.queryNodes($index_name, $search_phrase)
             YIELD node, score
-            RETURN node.text AS text, node.section_title AS section_title, node.id AS id, score
+            RETURN node.text AS text,
+                   node.section_title AS section_title,
+                   node.id AS id,
+                   node.page AS page,
+                   node.paragraph AS paragraph,
+                   score
             ORDER BY score DESC
             LIMIT $top_k
             """,

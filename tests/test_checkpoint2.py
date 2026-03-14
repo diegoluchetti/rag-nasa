@@ -69,3 +69,18 @@ def test_requirements_fase2_doc_exists():
     assert "FR-2.1.1" in text
     assert "NFR-2.1.1" in text
     assert "Neo4j" in text or "GraphRAG" in text
+
+
+def test_format_hit_includes_page_paragraph_when_available():
+    """_format_hit deve mencionar página e parágrafo quando presentes."""
+    from src.graphrag.query_engine import _format_hit
+
+    row = {
+        "section_title": "3.1.1 Systems Engineering Overview",
+        "text": "Some text",
+        "page": 42,
+        "paragraph": 3,
+    }
+    formatted = _format_hit(row, 1)
+    assert "p.42" in formatted
+    assert "parágrafo 3" in formatted

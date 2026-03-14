@@ -1,0 +1,17 @@
+# Fase 4 — Fine-tuning (Unsloth + LoRA) e export .gguf
+# Instalar em ambiente com GPU/CUDA. Para Colab, use o notebook notebooks/fase4_finetuning_colab.ipynb
+# (ele instala unsloth[colab-new] a partir do repositório Unsloth).
+# Ref.: docs/PLANO_FASE4_FINETUNING_GGUF.md, Design Decision 20.
+
+# Fine-tuning (local com CUDA)
+unsloth
+transformers
+datasets
+peft
+accelerate
+bitsandbytes
+trl
+xformers
+
+# Config (reutilizado das fases anteriores)
+PyYAML>=6.0

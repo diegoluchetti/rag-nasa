@@ -30,7 +30,7 @@ A Fase 1 converte o PDF do NASA Systems Engineering Handbook em Markdown de alta
 | FR-2.2 | O tamanho dos chunks deve ser limitado em tokens. | Cada chunk (após overlap) não excede `chunk_size` tokens (configurável; padrão 1000). |
 | FR-2.3 | Deve haver sobreposição configurável entre chunks consecutivos. | Overlap de `chunk_overlap` (ex.: 15%) aplicado entre chunk N e N+1. |
 | FR-2.4 | Blocos maiores que `chunk_size` devem ser subdivididos por parágrafos. | Subdivisão por `\n\n`; tabelas mantidas inteiras quando possível. |
-| FR-2.5 | Cada chunk deve ter metadados de hierarquia. | Presença de `section_title`, `section_level`, `source_file`; `appendix` quando o título indicar apêndice. |
+| FR-2.5 | Cada chunk deve ter metadados de hierarquia. | Presença de `section_title`, `section_level`, `source_file`; `appendix` quando o título indicar apêndice; `page` e `paragraph` quando a conversão PDF→MD inserir marcadores de página (para propagação até a Fase 2 e FR-2.3.6). |
 
 ### FR-3.1 Saída e integração
 
