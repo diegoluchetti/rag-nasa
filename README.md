@@ -35,7 +35,7 @@ Repositório Git já inicializado com commit inicial. Para enviar para um remoto
 2. Adicione o remote e faça o push:
 
 ```bash
-git remote add origin https://github.com/SEU_USUARIO/rag-nasa.git
+git remote add origin https://github.com/diegoluchetti/rag-nasa.git
 git branch -M main
 git push -u origin main
 ```

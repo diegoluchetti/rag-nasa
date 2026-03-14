@@ -106,6 +106,16 @@ def main() -> None:
         val_path = params["val_path"]
         output_dir = params["output_dir"]
 
+    if not train_path.exists() or not val_path.exists():
+        LOG.error(
+            "Dataset não encontrado. Esperado: %s e %s. "
+            "Gere com: python scripts/run_dataset_gen.py (ou copie os JSONL para data/datasets/). "
+            "Ver docs/FASE4_PASSO_A_PASSO_GIT_CLONE.md — Passo 2.",
+            train_path,
+            val_path,
+        )
+        sys.exit(1)
+
     LOG.info("Fase 4: Fine-tuning Unsloth — train=%s, val=%s, output=%s", train_path, val_path, output_dir)
 
     from src.finetuning.data_loader import load_dataset_for_unsloth

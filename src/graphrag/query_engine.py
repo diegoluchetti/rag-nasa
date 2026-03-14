@@ -111,6 +111,34 @@ def _call_llm_for_response(
         return None
 
 
+def retrieve_only(
+    question: str,
+    method: str | None = None,
+    top_k: int | None = None,
+    config: dict[str, Any] | None = None,
+    config_name: str = "default",
+) -> list[dict[str, Any]]:
+    """
+    Executa apenas o retrieval (Neo4j full-text). Não chama o LLM.
+    Útil para avaliar qualidade do RAG: Hit@k e MRR nos chunks recuperados.
+    Retorna lista de dicts com text, section_title, id, page, paragraph, score (ordem por relevância).
+    """
+    if config is None:
+        config = load_config(config_name)
+    ensure_index_exists(config)
+    neo = config.get("neo4j", {})
+    method = method or neo.get("default_query_method", "fulltext")
+    k = top_k if top_k is not None else int(neo.get("top_k", 5))
+    db_raw = neo.get("database")
+    database = None if (db_raw is not None and str(db_raw).strip() == "") else (db_raw or "neo4j")
+    driver = get_driver(config)
+    try:
+        rows = query_fulltext(driver, question, top_k=k, database=database)
+        return rows
+    finally:
+        driver.close()
+
+
 def ensure_index_exists(config: dict[str, Any]) -> int:
     """Verifica se há chunks no Neo4j. Retorna contagem; levanta RuntimeError se zero."""
     driver = get_driver(config)

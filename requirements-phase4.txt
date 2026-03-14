@@ -13,5 +13,6 @@ bitsandbytes
 trl
 xformers
 
-# Config (reutilizado das fases anteriores)
+# Config e load_config (run_finetuning importa src.ingestion.config_loader, que puxa o pacote ingestion)
 PyYAML>=6.0
+tiktoken>=0.5.0

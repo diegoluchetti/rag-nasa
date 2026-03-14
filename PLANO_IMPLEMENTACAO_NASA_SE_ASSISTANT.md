@@ -233,7 +233,7 @@ Executar o script; se passar, marcar **Checkpoint 1 concluído** e só então av
 
 - Chunks em Neo4j como nós `Chunk` (text, section_title, page, paragraph); índice full-text. Scripts: `run_neo4j_ingest.py`, `run_neo4j_query.py`. Config: `neo4j.uri`, `top_k`, `use_llm_for_response`, `llm_model`, `ollama_url`. Ver `docs/NEO4J_SETUP.md`.
 - **LLM (Design Decision 19):** Se `use_llm_for_response: true`, apenas o **texto** dos trechos vai ao LLM (Ollama); a aplicação monta a seção **Fontes** com metadados do retrieval (sem o LLM gerar fontes). Fallback: sem LLM, retorna trechos formatados.
-- **Conjunto gold:** `data/phase2_gold_questions.json`; métricas em `src/graphrag/retrieval_metrics.py`; verificador: `run_phase2_requirements_verifier.py --run-reference-query` (PASS/FAIL).
+- **Conjunto gold:** `data/phase2_gold_questions.json`; métricas em `src/graphrag/retrieval_metrics.py`; verificador: `run_phase2_requirements_verifier.py --run-reference-query` (PASS/FAIL). **Avaliação robusta (antes do fine-tuning):** `python scripts/run_phase2_rag_eval.py [--full-rag]` — calcula Hit@1, Hit@3, Hit@5, Hit@10 e MRR no retrieval; opcionalmente avalia se a resposta completa (RAG+LLM) contém os keywords esperados.
 
 ---
 

@@ -72,6 +72,7 @@ finetuning:
   logging_steps: 10
   output_dir: "models/nasa_se_3b_lora"
   gguf_output_name: "nasa_se_assistant_3b"
+  gguf_quantization: "q4_k_m"   # q8_0 ou f16 para maior qualidade (arquivo maior)
 
 # --- Paths (relativos à raiz do projeto) ---
 paths:
